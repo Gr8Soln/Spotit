@@ -15,6 +15,9 @@ interface Props {
   countdown?: number;
 }
 
+/** Fraction of the *remaining* time removed per wrong tap (0.5 = halves it). */
+export const WRONG_TAP_PENALTY = 0.5;
+
 /** Finder gameplay: the target's value is shown, never its position. Timing is measured on this client only. */
 export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: Props) {
   const { muted } = usePreferences();
@@ -23,7 +26,9 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
   const [elapsed, setElapsed] = useState(0);
   const [misses, setMisses] = useState<Set<number>>(new Set());
   const [end, setEnd] = useState<null | { found: boolean; hitId?: number | undefined }>(null);
+  const [penaltyFlash, setPenaltyFlash] = useState(0);
   const startRef = useRef(0);
+  const elapsedRef = useRef(0);
   const doneRef = useRef(false);
 
   useEffect(() => {
