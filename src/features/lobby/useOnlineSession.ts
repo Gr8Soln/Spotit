@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PeerLink, type ConnectionStatus } from "@/lib/network/peer";
-import { manualSignaling } from "@/lib/network/signaling";
+import { AutoRoomSignalingProvider, generateRoomCode, manualSignaling, normalizeRoomCode, type SignalingProvider } from "@/lib/network/signaling";
 import type { GameMessage, OutgoingMessage } from "@/lib/network/messages";
 import { DEFAULT_CONFIG, generateBoard, scoreRound, totals, validateConfig } from "@/lib/game-engine";
 import { randomSeed } from "@/lib/utils/random";
@@ -25,6 +25,7 @@ export interface OnlineRound {
 export function useOnlineSession(myName: string) {
   const [role, setRole] = useState<Seat | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
+  const [roomCode, setRoomCode] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [replyCode, setReplyCode] = useState("");
   const [peerName, setPeerName] = useState("");
@@ -34,7 +35,9 @@ export function useOnlineSession(myName: string) {
   const [round, setRound] = useState<OnlineRound | null>(null);
   const [history, setHistory] = useState<RoundResult[]>([]);
   const [error, setError] = useState("");
+
   const link = useRef<PeerLink | null>(null);
+  const signalingRef = useRef<SignalingProvider | null>(null);
   const stateRef = useRef({ role, config, round, myName });
   stateRef.current = { role, config, round, myName };
 
@@ -92,37 +95,59 @@ export function useOnlineSession(myName: string) {
   const reset = useCallback(() => {
     link.current?.close();
     link.current = null;
-    setStatus("idle"); setInviteCode(""); setReplyCode(""); setPeerName("");
+    if (signalingRef.current && "close" in signalingRef.current) {
+      (signalingRef.current as { close: () => void }).close();
+    }
+    signalingRef.current = null;
+    setStatus("idle"); setRoomCode(""); setInviteCode(""); setReplyCode(""); setPeerName("");
     setMyReady(false); setPeerReady(false); setRound(null); setHistory([]); setError("");
   }, []);
 
   useEffect(() => () => link.current?.close(), []);
 
-  const host = useCallback(async () => {
+  const host = useCallback(async (customCode?: string) => {
     reset();
     setRole("host");
     stateRef.current.role = "host";
+    const code = normalizeRoomCode(customCode || "") || generateRoomCode();
+    setRoomCode(code);
     try {
-      link.current = new PeerLink(manualSignaling, { onMessage, onStatus });
+      const provider = new AutoRoomSignalingProvider(code);
+      signalingRef.current = provider;
+      link.current = new PeerLink(provider, { onMessage, onStatus });
       setInviteCode(await link.current.createOffer());
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not create invite"); setStatus("failed"); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not create room");
+      setStatus("failed");
+    }
   }, [reset, onMessage, onStatus]);
 
   const acceptReply = useCallback(async (code: string) => {
     setError("");
     try { await link.current?.acceptAnswer(code); }
-    catch (e) { setError(e instanceof Error && e.message.includes("code") ? e.message : "That reply code isn't valid."); }
+    catch (e) { setError(e instanceof Error && e.message.includes("code") ? e.message : "Invalid reply code."); }
   }, []);
 
-  const join = useCallback(async (invite: string) => {
+  const join = useCallback(async (input: string) => {
     reset();
     setRole("guest");
     stateRef.current.role = "guest";
+    const normalized = normalizeRoomCode(input);
     try {
-      link.current = new PeerLink(manualSignaling, { onMessage, onStatus });
-      setReplyCode(await link.current.createAnswer(invite));
+      if (normalized.length === 5) {
+        setRoomCode(normalized);
+        const provider = new AutoRoomSignalingProvider(normalized);
+        signalingRef.current = provider;
+        link.current = new PeerLink(provider, { onMessage, onStatus });
+        setReplyCode(await link.current.createAnswer(normalized));
+      } else {
+        const provider = manualSignaling;
+        signalingRef.current = provider;
+        link.current = new PeerLink(provider, { onMessage, onStatus });
+        setReplyCode(await link.current.createAnswer(input));
+      }
     } catch (e) {
-      setError(e instanceof Error && e.message.includes("code") ? e.message : "That invite isn't valid or has expired.");
+      setError(e instanceof Error && e.message.includes("code") ? e.message : "Could not join room.");
       setStatus("failed");
     }
   }, [reset, onMessage, onStatus]);
@@ -162,7 +187,6 @@ export function useOnlineSession(myName: string) {
     send({ type: "rematch" });
     setHistory([]);
     setRound(null);
-    // round counter restarts from 1
     const seed = randomSeed();
     send({ type: "round_start", round: 1, seed, selector: "host" });
     beginRound(1, seed, "host", config);
@@ -174,7 +198,7 @@ export function useOnlineSession(myName: string) {
   };
 
   return {
-    role, status, inviteCode, replyCode, peerName, config, myReady, peerReady, round, history, error,
+    role, status, roomCode, inviteCode, replyCode, peerName, config, myReady, peerReady, round, history, error,
     scores: totals(history),
     host, join, acceptReply, reset, updateConfig, toggleReady, startRound, chooseTarget, reportGuess, reportFinish, rematch, backToLobby,
   };

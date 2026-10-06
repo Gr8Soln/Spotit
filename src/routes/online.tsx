@@ -77,12 +77,20 @@ function Online() {
   const { name } = usePreferences();
   const s = useOnlineSession(name);
   const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
-  const [inviteInput, setInviteInput] = useState("");
-  const [replyInput, setReplyInput] = useState("");
+  const [roomInput, setRoomInput] = useState("");
+  const [copiedLink, setCopiedLink] = useState(false);
 
   useEffect(() => {
     const h = window.location.hash;
-    if (h.startsWith("#invite=")) { setMode("join"); setInviteInput(h.slice(8)); }
+    if (h.startsWith("#room=")) {
+      const code = h.slice(6).slice(0, 5).toUpperCase();
+      setMode("join");
+      setRoomInput(code);
+      s.join(code);
+    } else if (h.startsWith("#invite=")) {
+      setMode("join");
+      setRoomInput(h.slice(8));
+    }
   }, []);
 
   const connected = s.status === "connected" || s.status === "reconnecting";
@@ -90,12 +98,15 @@ function Online() {
 
   if (s.round && (connected || lost)) return <OnlineGame s={s} lost={lost} />;
 
+  const displayRoomCode = s.roomCode || shortId(s.inviteCode);
+  const inviteUrl = `${window.location.origin}/online#room=${displayRoomCode}`;
+
   return (
     <div className="min-h-screen overflow-x-hidden">
       <AppHeader><StatusPill status={s.status} /></AppHeader>
       <main className="mx-auto max-w-3xl px-4 pb-16 sm:px-6">
         <h1 className="font-display text-4xl font-extrabold">Play online</h1>
-        <p className="mt-1 text-muted-foreground">Direct browser-to-browser connection. Nothing is stored on a server.</p>
+        <p className="mt-1 text-muted-foreground">Direct peer-to-peer room connection with 5-character room codes.</p>
 
         {connected ? (
           <Lobby s={s} />
@@ -104,50 +115,63 @@ function Online() {
             <button onClick={() => { setMode("create"); s.host(); }} className="rounded-3xl border-2 border-foreground bg-card p-6 text-left shadow-pop transition-transform hover:-translate-y-1 focus-visible:outline-2 focus-visible:outline-ring">
               <Plus className="h-8 w-8 text-primary" />
               <h2 className="mt-3 font-display text-2xl font-extrabold">Create a game</h2>
-              <p className="text-sm text-muted-foreground">Get an invite link to send to a friend.</p>
+              <p className="text-sm text-muted-foreground">Get a 5-character room code or link to share.</p>
             </button>
             <button onClick={() => setMode("join")} className="rounded-3xl border-2 border-foreground bg-card p-6 text-left shadow-pop transition-transform hover:-translate-y-1 focus-visible:outline-2 focus-visible:outline-ring">
               <LogIn className="h-8 w-8 text-primary" />
               <h2 className="mt-3 font-display text-2xl font-extrabold">Join a game</h2>
-              <p className="text-sm text-muted-foreground">Open or paste the invite you received.</p>
+              <p className="text-sm text-muted-foreground">Enter a 5-character room code to join instantly.</p>
             </button>
           </div>
         ) : mode === "create" ? (
           <section className="mt-8 space-y-6 rounded-3xl border-2 border-border bg-card p-5 sm:p-7">
-            <Step n={1} title="Send this invite to your friend">
-              {s.inviteCode ? (
-                <>
-                  <p className="text-sm">Room <span className="rounded-md bg-muted px-2 py-0.5 font-mono font-bold">{shortId(s.inviteCode)}</span></p>
-                  <CopyField label="Invite link" value={`${window.location.origin}/online#invite=${s.inviteCode}`} />
-                </>
-              ) : s.status === "failed" ? null : (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Preparing invite…</p>
+            <Step n={1} title="Share your 5-character room code">
+              {displayRoomCode ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 rounded-2xl bg-muted p-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Room Code</p>
+                      <p className="font-display text-4xl font-extrabold tracking-wider text-primary">{displayRoomCode}</p>
+                    </div>
+                    <Button variant="popAlt" className="ml-auto" onClick={async () => {
+                      await navigator.clipboard.writeText(displayRoomCode);
+                      toast.success("Room code copied!");
+                    }}>
+                      <Copy className="h-4 w-4" /> Copy Code
+                    </Button>
+                  </div>
+                  <CopyField label="Direct Invite Link" value={inviteUrl} />
+                  <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" /> Waiting for guest to join room <span className="font-bold text-foreground">{displayRoomCode}</span>…
+                  </p>
+                </div>
+              ) : (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Creating room…</p>
               )}
-            </Step>
-            <Step n={2} title="Paste the reply code they send back">
-              <Textarea value={replyInput} onChange={(e) => setReplyInput(e.target.value)} placeholder="Reply code…" className="font-mono text-xs" rows={3} />
-              <Button variant="pop" disabled={!replyInput.trim() || !s.inviteCode || s.status === "connecting"} onClick={() => s.acceptReply(replyInput)}>
-                <Link2 /> Connect
-              </Button>
             </Step>
             {s.error && <p role="alert" className="text-sm font-medium text-destructive">{s.error}</p>}
             <Button variant="ghost" onClick={() => { s.reset(); setMode("choose"); }}>Cancel</Button>
           </section>
         ) : (
           <section className="mt-8 space-y-6 rounded-3xl border-2 border-border bg-card p-5 sm:p-7">
-            <Step n={1} title="Paste the invite link or code">
-              <Textarea value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} placeholder="https://…/online#invite=…" className="font-mono text-xs" rows={3} />
-              {inviteInput && <p className="text-sm">Room <span className="rounded-md bg-muted px-2 py-0.5 font-mono font-bold">{shortId(inviteInput.split("#invite=").pop()!.trim())}</span></p>}
-              <Button variant="pop" disabled={!inviteInput.trim() || (!!s.replyCode && s.status === "waiting")} onClick={() => s.join(inviteInput)}>
-                Create reply code
-              </Button>
+            <Step n={1} title="Enter 5-character room code">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="space-y-1">
+                  <Label htmlFor="room-code-input">Room Code</Label>
+                  <Input id="room-code-input" maxLength={5} value={roomInput}
+                    onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
+                    placeholder="e.g. K9X2P" className="w-36 font-display text-xl font-extrabold uppercase tracking-widest text-center" />
+                </div>
+                <Button variant="pop" disabled={roomInput.trim().length < 5 || s.status === "connecting"} onClick={() => s.join(roomInput)}>
+                  <Link2 /> Join Room
+                </Button>
+              </div>
+              {s.status === "waiting" && (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground mt-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" /> Connecting to room <span className="font-bold text-foreground">{roomInput}</span>…
+                </p>
+              )}
             </Step>
-            {s.replyCode && (
-              <Step n={2} title="Send this reply code back to the host">
-                <CopyField label="Reply code" value={s.replyCode} />
-                <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Waiting for the host to connect…</p>
-              </Step>
-            )}
             {s.error && <p role="alert" className="text-sm font-medium text-destructive">{s.error}</p>}
             <Button variant="ghost" onClick={() => { s.reset(); setMode("choose"); history.replaceState(null, "", "/online"); }}>Cancel</Button>
           </section>
@@ -155,16 +179,14 @@ function Online() {
 
         {lost && !s.round && (
           <p role="alert" className="mt-6 rounded-2xl bg-destructive/10 p-4 text-sm font-medium text-destructive">
-            {s.peerName} disconnected. Reconnecting requires a new invite — create or join again.
+            {s.peerName} disconnected. Create or enter a room code to play again.
           </p>
         )}
 
         <aside className="mt-10 flex gap-3 rounded-2xl bg-muted p-4 text-sm text-muted-foreground">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
-            Online play uses a direct WebRTC link. Because there's no game server, the two players swap codes once to connect
-            (short room codes would need a hosted connection service). Some strict office or mobile networks may block direct
-            connections. Scores are kept by each browser and aren't tamper-proof.
+            Online play uses a direct peer-to-peer WebRTC connection using 5-character room codes. No passwords or account sign-ups required.
           </p>
         </aside>
       </main>

@@ -3,18 +3,48 @@ import type { SignalingProvider } from "./signaling";
 
 export type ConnectionStatus = "idle" | "waiting" | "connecting" | "connected" | "reconnecting" | "disconnected" | "failed";
 
-/** Public STUN only. Strict NATs may need a TURN server, which requires infrastructure. */
-const ICE_SERVERS: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+/** Public STUN servers for NAT traversal redundancy. */
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  { urls: ["stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302"] },
+  { urls: ["stun:stun.cloudflare.com:3478"] },
+];
 
 interface Handlers {
   onMessage: (m: GameMessage) => void;
   onStatus: (s: ConnectionStatus) => void;
 }
 
+function waitForIceCandidates(pc: RTCPeerConnection, timeoutMs = 3500): Promise<void> {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") {
+      resolve();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = () => {
+      clearTimeout(timer);
+      pc.removeEventListener("icegatheringstatechange", onGatheringChange);
+      pc.removeEventListener("icecandidate", onCandidate);
+      resolve();
+    };
+    const onGatheringChange = () => {
+      if (pc.iceGatheringState === "complete") finish();
+    };
+    const onCandidate = (e: RTCPeerConnectionIceEvent) => {
+      if (!e.candidate) finish();
+    };
+    pc.addEventListener("icegatheringstatechange", onGatheringChange);
+    pc.addEventListener("icecandidate", onCandidate);
+    timer = setTimeout(finish, timeoutMs);
+  });
+}
+
 /** One WebRTC DataChannel link between two players. Knows nothing about game rules. */
 export class PeerLink {
   private pc: RTCPeerConnection;
   private channel: RTCDataChannel | null = null;
+  private unsubscribeSignaling?: () => void;
 
   constructor(private signaling: SignalingProvider, private handlers: Handlers) {
     this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -24,8 +54,21 @@ export class PeerLink {
       else if (s === "disconnected") handlers.onStatus("reconnecting");
       else if (s === "failed") handlers.onStatus("failed");
       else if (s === "closed") handlers.onStatus("disconnected");
-      else if (s === "connected" && this.channel?.readyState === "open") handlers.onStatus("connected");
+      else if (s === "connected" && (this.channel?.readyState === "open" || !this.channel)) handlers.onStatus("connected");
     };
+
+    if (this.signaling.subscribe) {
+      this.unsubscribeSignaling = this.signaling.subscribe(async (desc) => {
+        try {
+          if (desc.type === "answer" && this.pc.signalingState === "have-local-offer") {
+            await this.pc.setRemoteDescription(desc);
+            this.handlers.onStatus("connecting");
+          } else if (desc.type === "offer" && this.pc.signalingState === "stable") {
+            await this.acceptRemoteOffer(desc);
+          }
+        } catch { /* ignore mismatched messages */ }
+      });
+    }
   }
 
   private bind(ch: RTCDataChannel) {
@@ -39,43 +82,49 @@ export class PeerLink {
     };
   }
 
-  private waitForIce(timeoutMs = 5000) {
-    return new Promise<void>((resolve) => {
-      if (this.pc.iceGatheringState === "complete") return resolve();
-      const t = setTimeout(resolve, timeoutMs);
-      this.pc.addEventListener("icegatheringstatechange", () => {
-        if (this.pc.iceGatheringState === "complete") { clearTimeout(t); resolve(); }
-      });
-    });
-  }
-
-  /** Host: create the invite code. */
+  /** Host: create the offer and return room code or invite code. */
   async createOffer(): Promise<string> {
     this.bind(this.pc.createDataChannel("game", { ordered: true }));
-    await this.pc.setLocalDescription(await this.pc.createOffer());
-    await this.waitForIce();
+    const offer = await this.pc.createOffer();
+    await this.pc.setLocalDescription(offer);
+    await waitForIceCandidates(this.pc);
     this.handlers.onStatus("waiting");
-    return this.signaling.encode(this.pc.localDescription!);
+    return await this.signaling.encode(this.pc.localDescription!);
   }
 
-  /** Host: apply the guest's reply code. */
-  async acceptAnswer(code: string) {
-    const desc = this.signaling.decode(code);
-    if (desc.type !== "answer") throw new Error("That's an invite code, not a reply code.");
+  /** Host or Guest: apply answer description. */
+  async acceptAnswer(code: string | RTCSessionDescriptionInit) {
+    const desc = typeof code === "string" ? await this.signaling.decode(code) : code;
+    if (desc.type !== "answer") throw new Error("Expected an answer description.");
     this.handlers.onStatus("connecting");
     await this.pc.setRemoteDescription(desc);
   }
 
-  /** Guest: turn the host's invite into a reply code. */
-  async createAnswer(inviteCode: string): Promise<string> {
-    const desc = this.signaling.decode(inviteCode);
-    if (desc.type !== "offer") throw new Error("That's a reply code, not an invite.");
+  /** Guest: accept remote host offer and return answer description/code. */
+  async acceptRemoteOffer(desc: RTCSessionDescriptionInit): Promise<string> {
     this.pc.ondatachannel = (e) => this.bind(e.channel);
+    this.handlers.onStatus("connecting");
     await this.pc.setRemoteDescription(desc);
-    await this.pc.setLocalDescription(await this.pc.createAnswer());
-    await this.waitForIce();
+    const answer = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(answer);
+    await waitForIceCandidates(this.pc);
     this.handlers.onStatus("waiting");
-    return this.signaling.encode(this.pc.localDescription!);
+    return await this.signaling.encode(this.pc.localDescription!);
+  }
+
+  /** Guest: turn the host's invite/code into an answer. */
+  async createAnswer(inviteCode: string): Promise<string> {
+    const desc = await this.signaling.decode(inviteCode);
+    if (desc.type !== "offer" && desc.sdp !== "") {
+      throw new Error("Invalid offer description.");
+    }
+    if (desc.sdp) {
+      return await this.acceptRemoteOffer(desc);
+    }
+    // If room code only, waiting for automatic offer via signaling
+    this.pc.ondatachannel = (e) => this.bind(e.channel);
+    this.handlers.onStatus("waiting");
+    return inviteCode;
   }
 
   send(msg: OutgoingMessage) {
@@ -85,6 +134,7 @@ export class PeerLink {
   }
 
   close() {
+    this.unsubscribeSignaling?.();
     try { this.send({ type: "leave" }); } catch { /* ignore */ }
     this.channel?.close();
     this.pc.close();
