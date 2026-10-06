@@ -5,7 +5,7 @@ import type { GameMessage, OutgoingMessage } from "@/lib/network/messages";
 import { DEFAULT_CONFIG, generateBoard, scoreRound, totals, validateConfig } from "@/lib/game-engine";
 import { applyWrongPenalty, calculateWinner } from "@/lib/game-engine/scoring";
 import { randomSeed } from "@/lib/utils/random";
-import type { Board, ChessClockState, GameConfig, RoundResult } from "@/types/game";
+import type { Board, ChessClockState, GameConfig, PlayerClock, RoundResult } from "@/types/game";
 
 export type Seat = "host" | "guest";
 /** Seat "a" = host, "b" = guest in the scoring engine. */
@@ -76,9 +76,17 @@ export function useOnlineSession(myName: string) {
 
   // ── Chess-clock broadcast helper ──────────────────────────────────────────
   const broadcastClockSync = useCallback((cs: ChessClockState) => {
+    const now = performance.now();
+    // Convert internal startedAt (absolute performance.now()) to elapsedMs
+    // (relative duration) before sending — performance.now() is device-local
+    // and meaningless on the other machine.
+    const toNet = (c: PlayerClock) => ({
+      remainingMs: c.remainingMs,
+      elapsedMs: c.startedAt !== null ? Math.max(0, now - c.startedAt) : 0,
+    });
     send({
       type: "clock_sync",
-      clocks: cs.clocks,
+      clocks: { a: toNet(cs.clocks.a), b: toNet(cs.clocks.b) },
       activeClock: cs.activeClock,
       usedNumbers: cs.usedNumbers,
       scores: cs.scores,
@@ -133,10 +141,14 @@ export function useOnlineSession(myName: string) {
         [finderSlot]: { remainingMs: afterPenalty, startedAt: afterPenalty > 0 ? now : null },
       };
       if (afterPenalty <= 0) {
-        const winner = calculateWinner(prev.scores);
+        const winner = calculateWinner(prev.scores, finderSlot);
         const next: ChessClockState = { ...prev, clocks: newClocks, activeClock: null, phase: "game_over" };
         broadcastClockSync(next);
-        send({ type: "chess_game_over", scores: prev.scores, winner, clocks: newClocks });
+        const netClocks = {
+          a: { remainingMs: newClocks.a.remainingMs, elapsedMs: 0 },
+          b: { remainingMs: newClocks.b.remainingMs, elapsedMs: 0 },
+        };
+        send({ type: "chess_game_over", scores: prev.scores, winner, clocks: netClocks });
         setChessGameOver({ scores: prev.scores, winner });
         return next;
       }
@@ -184,9 +196,13 @@ export function useOnlineSession(myName: string) {
       if (!prev || prev.phase === "game_over") return prev;
       const expiredClocks = { ...prev.clocks, [slot]: { remainingMs: 0, startedAt: null } };
       const next: ChessClockState = { ...prev, clocks: expiredClocks, activeClock: null, phase: "game_over" };
-      const winner = calculateWinner(prev.scores);
+      const winner = calculateWinner(prev.scores, slot);
       broadcastClockSync(next);
-      send({ type: "chess_game_over", scores: prev.scores, winner, clocks: expiredClocks });
+      const netExpiredClocks = {
+        a: { remainingMs: expiredClocks.a.remainingMs, elapsedMs: 0 },
+        b: { remainingMs: expiredClocks.b.remainingMs, elapsedMs: 0 },
+      };
+      send({ type: "chess_game_over", scores: prev.scores, winner, clocks: netExpiredClocks });
       setChessGameOver({ scores: prev.scores, winner });
       return next;
     });
@@ -247,11 +263,25 @@ export function useOnlineSession(myName: string) {
         setChessState(null); setChessGameOver(null);
         break;
       case "leave": setStatus("disconnected"); break;
-      case "clock_sync":
-        // Guest applies the authoritative clock state from host
+      case "clock_sync": {
+        // Convert the received elapsedMs (relative) back into a local startedAt
+        // (absolute, anchored to *this device's* performance.now()).
+        // This is the core of the clock-sync fix: the host sent a device-independent
+        // duration; we make it local here.
+        const now = performance.now();
+        const fromNet = (
+          c: { remainingMs: number; elapsedMs: number },
+          isActive: boolean,
+        ): import("@/types/game").PlayerClock => ({
+          remainingMs: c.remainingMs,
+          startedAt: isActive ? now - c.elapsedMs : null,
+        });
         setChessState({
           totalMs: stateRef.current.config.timerSec * 1000,
-          clocks: m.clocks,
+          clocks: {
+            a: fromNet(m.clocks.a, m.activeClock === "a"),
+            b: fromNet(m.clocks.b, m.activeClock === "b"),
+          },
           activeClock: m.activeClock,
           usedNumbers: m.usedNumbers,
           scores: m.scores,
@@ -261,12 +291,19 @@ export function useOnlineSession(myName: string) {
           phase: m.phase,
         });
         break;
-      case "chess_game_over":
+      }
+      case "chess_game_over": {
         setChessGameOver({ scores: m.scores, winner: m.winner });
+        // Convert network clocks (elapsedMs) → local PlayerClock (startedAt null — game over)
+        const finalClocks = {
+          a: { remainingMs: m.clocks.a.remainingMs, startedAt: null as null },
+          b: { remainingMs: m.clocks.b.remainingMs, startedAt: null as null },
+        };
         setChessState((prev) =>
-          prev ? { ...prev, clocks: m.clocks, activeClock: null, phase: "game_over" } : prev,
+          prev ? { ...prev, clocks: finalClocks, activeClock: null, phase: "game_over" } : prev,
         );
         break;
+      }
     }
   }, [beginRound, applyFinish]);
 

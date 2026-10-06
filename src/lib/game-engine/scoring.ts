@@ -52,9 +52,17 @@ export function applyWrongPenalty(currentMs: number): number {
 
 /**
  * Determine winner by score count. Returns seat letter or "draw".
+ * When scores are tied and a clock expired, the player whose clock
+ * ran out loses — the other player wins.
  */
-export function calculateWinner(scores: { a: number; b: number }): "a" | "b" | "draw" {
+export function calculateWinner(
+  scores: { a: number; b: number },
+  clockExpiredSeat?: "a" | "b",
+): "a" | "b" | "draw" {
   if (scores.a > scores.b) return "a";
   if (scores.b > scores.a) return "b";
+  // Scores equal — tiebreak by clock expiry if known
+  if (clockExpiredSeat === "a") return "b";
+  if (clockExpiredSeat === "b") return "a";
   return "draw";
 }

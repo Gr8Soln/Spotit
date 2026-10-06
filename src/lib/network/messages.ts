@@ -11,7 +11,8 @@ const configSchema = z.object({
 
 const playerClockSchema = z.object({
   remainingMs: z.number().nonnegative(),
-  startedAt: z.number().nullable(),
+  /** ms already consumed since the clock last started; 0 when the clock is paused. */
+  elapsedMs: z.number().nonnegative(),
 });
 
 const base = { sentAt: z.number() };
