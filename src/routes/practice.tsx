@@ -41,10 +41,16 @@ function Practice() {
     setPhase({ kind: "play", board, target: pickTarget(board, roundSeed) });
   };
   const startGame = () => {
-    const s = randomSeed();
-    setSeed(s);
-    setHistory([]);
-    startRound(s, 1);
+    console.log("[debug] startGame fired");
+    try {
+      const s = randomSeed();
+      setSeed(s);
+      setHistory([]);
+      startRound(s, 1);
+      console.log("[debug] startRound done");
+    } catch (e) {
+      console.error("[debug] startGame failed", e);
+    }
   };
 
   const last = history[history.length - 1];
