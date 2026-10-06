@@ -22,7 +22,7 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
   const [pre, setPre] = useState(countdown);
   const [elapsed, setElapsed] = useState(0);
   const [misses, setMisses] = useState<Set<number>>(new Set());
-  const [end, setEnd] = useState<null | { found: boolean; hitId?: number }>(null);
+  const [end, setEnd] = useState<null | { found: boolean; hitId?: number | undefined }>(null);
   const startRef = useRef(0);
   const doneRef = useRef(false);
 

@@ -76,7 +76,7 @@ function Landing() {
             </div>
           </div>
           <div className="relative mx-auto w-full max-w-md">
-            <motion.div key={i} initial={{ opacity: 0, rotate: -4, scale: 0.94 }} animate={{ opacity: 1, rotate: 2, scale: 1 }} transition={{ type: "spring", stiffness: 140, damping: 16 }}
+            <motion.div key={i} initial={{ rotate: -4, scale: 0.94 }} animate={{ rotate: 2, scale: 1 }} transition={{ type: "spring", stiffness: 140, damping: 16 }}
               className="shadow-soft rounded-[2rem]">
               <BoardView board={board} stateOf={(n) => (n.id === highlight ? "selected" : "idle")} label="Preview board" />
             </motion.div>

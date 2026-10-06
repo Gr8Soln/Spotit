@@ -11,7 +11,7 @@ function sampleValues(min: number, max: number, count: number, rng: Rng): number
   const n = Math.min(count, all.length);
   for (let i = 0; i < n; i++) {
     const j = i + Math.floor(rng() * (all.length - i));
-    [all[i], all[j]] = [all[j], all[i]];
+    [all[i], all[j]] = [all[j]!, all[i]!];
   }
   return all.slice(0, n);
 }
@@ -50,7 +50,7 @@ export function generateBoard(config: GameConfig, seed: string): Board {
           r: ri,
           fontSize,
           rotation: Math.round((rng() * 2 - 1) * diff.rotation),
-          weight: diff.weights ? [500, 700, 800][Math.floor(rng() * 3)] : 700,
+          weight: diff.weights ? [500, 700, 800][Math.floor(rng() * 3)]! : 700,
           tone: diff.tones && rng() < 0.5 ? 1 : 0,
         });
         done = true;
@@ -66,5 +66,5 @@ export function generateBoard(config: GameConfig, seed: string): Board {
 /** Deterministic computer target pick (practice mode). */
 export function pickTarget(board: Board, seed: string): number {
   const rng = createRng(seed + "|target");
-  return board.numbers[Math.floor(rng() * board.numbers.length)].value;
+  return board.numbers[Math.floor(rng() * board.numbers.length)]!.value;
 }

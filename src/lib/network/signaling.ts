@@ -33,7 +33,7 @@ export const manualSignaling: SignalingProvider = {
   },
   decode(code) {
     const trimmed = code.trim();
-    const fromLink = trimmed.includes("#invite=") ? trimmed.split("#invite=")[1] : trimmed;
+    const fromLink = trimmed.includes("#invite=") ? trimmed.split("#invite=")[1]! : trimmed;
     const obj = JSON.parse(fromB64Url(fromLink));
     if ((obj.t !== "o" && obj.t !== "a") || typeof obj.s !== "string") throw new Error("Invalid code");
     return { type: obj.t === "o" ? "offer" : "answer", sdp: obj.s };
