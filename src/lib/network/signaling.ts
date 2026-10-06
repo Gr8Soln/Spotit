@@ -10,6 +10,8 @@ export interface SignalingProvider {
   encode(desc: RTCSessionDescriptionInit): Promise<string> | string;
   decode(code: string): Promise<RTCSessionDescriptionInit> | RTCSessionDescriptionInit;
   subscribe?(onRemoteDesc: (desc: RTCSessionDescriptionInit) => void): () => void;
+  sendCandidate?(candidate: RTCIceCandidateInit): void;
+  onCandidate?(onRemoteCandidate: (candidate: RTCIceCandidateInit) => void): () => void;
 }
 
 const ROOM_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -79,7 +81,18 @@ export function shortId(code: string) {
   return (h >>> 0).toString(36).toUpperCase().padStart(5, "0").slice(0, 5);
 }
 
-/** MQTT WebSocket binary packet encoders for zero-dependency browser signaling */
+/** MQTT 3.1.1 variable-length integer encoding for payloads > 127 bytes */
+function encodeVariableLength(len: number): number[] {
+  const bytes: number[] = [];
+  do {
+    let digit = len % 128;
+    len = Math.floor(len / 128);
+    if (len > 0) digit |= 0x80;
+    bytes.push(digit);
+  } while (len > 0);
+  return bytes;
+}
+
 function encodeConnect(clientId: string): Uint8Array {
   const cidBytes = new TextEncoder().encode(clientId);
   const payload = new Uint8Array(12 + cidBytes.length);
@@ -88,20 +101,29 @@ function encodeConnect(clientId: string): Uint8Array {
   payload[6] = 0x04; payload[7] = 0x02; payload[8] = 0x00; payload[9] = 0x3c;
   payload[10] = (cidBytes.length >> 8) & 0xff; payload[11] = cidBytes.length & 0xff;
   payload.set(cidBytes, 12);
-  const pkt = new Uint8Array(2 + payload.length);
-  pkt[0] = 0x10; pkt[1] = payload.length; pkt.set(payload, 2);
+
+  const varLen = encodeVariableLength(payload.length);
+  const pkt = new Uint8Array(1 + varLen.length + payload.length);
+  pkt[0] = 0x10;
+  pkt.set(varLen, 1);
+  pkt.set(payload, 1 + varLen.length);
   return pkt;
 }
 
 function encodeSubscribe(topic: string, msgId: number): Uint8Array {
   const topBytes = new TextEncoder().encode(topic);
-  const payload = new Uint8Array(2 + 2 + topBytes.length + 1);
-  payload[0] = (msgId >> 8) & 0xff; payload[1] = msgId & 0xff;
-  payload[2] = (topBytes.length >> 8) & 0xff; payload[3] = topBytes.length & 0xff;
-  payload.set(topBytes, 4);
-  payload[4 + topBytes.length] = 0;
-  const pkt = new Uint8Array(2 + payload.length);
-  pkt[0] = 0x82; pkt[1] = payload.length; pkt.set(payload, 2);
+  const bodyLen = 2 + 2 + topBytes.length + 1;
+  const varLen = encodeVariableLength(bodyLen);
+  const pkt = new Uint8Array(1 + varLen.length + bodyLen);
+  pkt[0] = 0x82;
+  pkt.set(varLen, 1);
+  const offset = 1 + varLen.length;
+  pkt[offset] = (msgId >> 8) & 0xff;
+  pkt[offset + 1] = msgId & 0xff;
+  pkt[offset + 2] = (topBytes.length >> 8) & 0xff;
+  pkt[offset + 3] = topBytes.length & 0xff;
+  pkt.set(topBytes, offset + 4);
+  pkt[offset + 4 + topBytes.length] = 0; // QoS 0
   return pkt;
 }
 
@@ -109,11 +131,15 @@ function encodePublish(topic: string, message: string): Uint8Array {
   const topBytes = new TextEncoder().encode(topic);
   const msgBytes = new TextEncoder().encode(message);
   const bodyLen = 2 + topBytes.length + msgBytes.length;
-  const pkt = new Uint8Array(2 + bodyLen);
-  pkt[0] = 0x30; pkt[1] = bodyLen;
-  pkt[2] = (topBytes.length >> 8) & 0xff; pkt[3] = topBytes.length & 0xff;
-  pkt.set(topBytes, 4);
-  pkt.set(msgBytes, 4 + topBytes.length);
+  const varLen = encodeVariableLength(bodyLen);
+  const pkt = new Uint8Array(1 + varLen.length + bodyLen);
+  pkt[0] = 0x30;
+  pkt.set(varLen, 1);
+  const offset = 1 + varLen.length;
+  pkt[offset] = (topBytes.length >> 8) & 0xff;
+  pkt[offset + 1] = topBytes.length & 0xff;
+  pkt.set(topBytes, offset + 2);
+  pkt.set(msgBytes, offset + 2 + topBytes.length);
   return pkt;
 }
 
@@ -123,8 +149,10 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
   readonly automatic = true;
   private ws: WebSocket | null = null;
   private subscribers: Set<(desc: RTCSessionDescriptionInit) => void> = new Set();
+  private candidateSubscribers: Set<(candidate: RTCIceCandidateInit) => void> = new Set();
   private pendingPayloads: string[] = [];
   private connected = false;
+  private senderId = Math.random().toString(36).slice(2, 9);
 
   constructor(public readonly roomCode: string) {
     this.connect();
@@ -132,7 +160,7 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
 
   private connect() {
     const topic = `spotit/room/${this.roomCode}`;
-    const clientId = `spotit-${Math.random().toString(36).slice(2, 8)}`;
+    const clientId = `spotit-${this.senderId}`;
     const endpoints = [
       "wss://broker.emqx.io:8084/mqtt",
       "wss://test.mosquitto.org:8081",
@@ -147,7 +175,7 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
         this.ws = ws;
 
         ws.onopen = () => {
-          ws.send(encodeConnect(clientId));
+          ws.send(encodeConnect(clientId) as any);
         };
 
         ws.onmessage = (e) => {
@@ -156,15 +184,26 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
           const type = bytes[0]! & 0xf0;
           if (type === 0x20) { // CONNACK
             this.connected = true;
-            ws.send(encodeSubscribe(topic, 1));
-            for (const p of this.pendingPayloads) ws.send(encodePublish(topic, p));
+            ws.send(encodeSubscribe(topic, 1) as any);
+            for (const p of this.pendingPayloads) ws.send(encodePublish(topic, p) as any);
             this.pendingPayloads = [];
           } else if (type === 0x30) { // PUBLISH
             try {
-              const topLen = (bytes[2]! << 8) | bytes[3]!;
-              const payload = new TextDecoder().decode(bytes.subarray(4 + topLen));
+              let idx = 1;
+              let digit = 0;
+              do {
+                digit = bytes[idx++]!;
+              } while ((digit & 0x80) !== 0 && idx < bytes.length);
+
+              const topLen = (bytes[idx]! << 8) | bytes[idx + 1]!;
+              const payloadOffset = idx + 2 + topLen;
+              const payload = new TextDecoder().decode(bytes.subarray(payloadOffset));
               const obj = JSON.parse(payload);
-              if (obj.sdp && (obj.type === "offer" || obj.type === "answer")) {
+              if (obj.senderId === this.senderId) return; // ignore self broadcast
+
+              if (obj.candidate) {
+                for (const sub of this.candidateSubscribers) sub(obj.candidate);
+              } else if (obj.sdp && (obj.type === "offer" || obj.type === "answer")) {
                 const desc: RTCSessionDescriptionInit = { type: obj.type, sdp: obj.s || obj.sdp };
                 for (const sub of this.subscribers) sub(desc);
               }
@@ -196,17 +235,31 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
     return () => this.subscribers.delete(onRemoteDesc);
   }
 
-  encode(desc: RTCSessionDescriptionInit): string {
-    const payload = JSON.stringify({ type: desc.type, sdp: desc.sdp, room: this.roomCode });
+  onCandidate(onRemoteCandidate: (candidate: RTCIceCandidateInit) => void): () => void {
+    this.candidateSubscribers.add(onRemoteCandidate);
+    return () => this.candidateSubscribers.delete(onRemoteCandidate);
+  }
+
+  sendCandidate(candidate: RTCIceCandidateInit): void {
+    const payload = JSON.stringify({ candidate, room: this.roomCode, senderId: this.senderId });
     if (this.ws && this.connected && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(encodePublish(`spotit/room/${this.roomCode}`, payload));
+      this.ws.send(encodePublish(`spotit/room/${this.roomCode}`, payload) as any);
+    } else {
+      this.pendingPayloads.push(payload);
+    }
+  }
+
+  encode(desc: RTCSessionDescriptionInit): string {
+    const payload = JSON.stringify({ type: desc.type, sdp: desc.sdp, room: this.roomCode, senderId: this.senderId });
+    if (this.ws && this.connected && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(encodePublish(`spotit/room/${this.roomCode}`, payload) as any);
     } else {
       this.pendingPayloads.push(payload);
     }
     return this.roomCode;
   }
 
-  decode(code: string): RTCSessionDescriptionInit {
+  decode(code: string): Promise<RTCSessionDescriptionInit> | RTCSessionDescriptionInit {
     const norm = normalizeRoomCode(code);
     if (norm.length === 5) {
       return { type: "offer", sdp: "" };
@@ -217,5 +270,6 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
   close() {
     this.ws?.close();
     this.subscribers.clear();
+    this.candidateSubscribers.clear();
   }
 }

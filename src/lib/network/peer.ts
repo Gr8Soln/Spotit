@@ -45,6 +45,7 @@ export class PeerLink {
   private pc: RTCPeerConnection;
   private channel: RTCDataChannel | null = null;
   private unsubscribeSignaling?: () => void;
+  private unsubscribeCandidate?: () => void;
 
   constructor(private signaling: SignalingProvider, private handlers: Handlers) {
     this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -56,6 +57,20 @@ export class PeerLink {
       else if (s === "closed") handlers.onStatus("disconnected");
       else if (s === "connected" && (this.channel?.readyState === "open" || !this.channel)) handlers.onStatus("connected");
     };
+
+    this.pc.onicecandidate = (e) => {
+      if (e.candidate && this.signaling.sendCandidate) {
+        this.signaling.sendCandidate(e.candidate.toJSON());
+      }
+    };
+
+    if (this.signaling.onCandidate) {
+      this.unsubscribeCandidate = this.signaling.onCandidate((candidate) => {
+        if (this.pc.remoteDescription) {
+          this.pc.addIceCandidate(candidate).catch(() => {});
+        }
+      });
+    }
 
     if (this.signaling.subscribe) {
       this.unsubscribeSignaling = this.signaling.subscribe(async (desc) => {
@@ -87,7 +102,7 @@ export class PeerLink {
     this.bind(this.pc.createDataChannel("game", { ordered: true }));
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
-    await waitForIceCandidates(this.pc);
+    await waitForIceCandidates(this.pc, 1500);
     this.handlers.onStatus("waiting");
     return await this.signaling.encode(this.pc.localDescription!);
   }
@@ -107,7 +122,7 @@ export class PeerLink {
     await this.pc.setRemoteDescription(desc);
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
-    await waitForIceCandidates(this.pc);
+    await waitForIceCandidates(this.pc, 1500);
     this.handlers.onStatus("waiting");
     return await this.signaling.encode(this.pc.localDescription!);
   }
@@ -135,6 +150,7 @@ export class PeerLink {
 
   close() {
     this.unsubscribeSignaling?.();
+    this.unsubscribeCandidate?.();
     try { this.send({ type: "leave" }); } catch { /* ignore */ }
     this.channel?.close();
     this.pc.close();
