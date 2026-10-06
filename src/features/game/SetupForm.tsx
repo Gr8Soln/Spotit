@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { GameConfig, Difficulty } from "@/types/game";
-import { DIFFICULTIES, RANGE_PRESETS, THEMES, TIMER_PRESETS, TIMER_LIMITS, RANGE_LIMITS } from "@/lib/game-engine";
+import { DIFFICULTIES, RANGE_PRESETS, THEMES, TIMER_PRESETS, TIMER_LIMITS, RANGE_LIMITS, boardNumberCount, validateConfig } from "@/lib/game-engine";
 import { SHAPE_LIST } from "@/lib/shapes";
 import { ShapeSilhouette } from "@/components/BoardView";
 import { Input } from "@/components/ui/input";
@@ -64,6 +64,9 @@ export function SetupForm({ config, onChange }: { config: GameConfig; onChange: 
       </Section>
 
       <Section title="Number range">
+        {validateConfig(config).length === 0 && (
+          <p className="text-sm font-semibold text-muted-foreground">{boardNumberCount(config)} numbers</p>
+        )}
         <div className="flex flex-wrap gap-2">
           {RANGE_PRESETS.map((m) => (
             <button key={m} type="button" aria-pressed={!customRange && config.min === 1 && config.max === m}

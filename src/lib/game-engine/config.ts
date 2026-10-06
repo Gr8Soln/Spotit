@@ -7,13 +7,24 @@ export const TIMER_LIMITS = { min: 5, max: 300 };
 
 export const DIFFICULTIES: Record<
   Difficulty,
-  { label: string; hint: string; count: number; rotation: number; sizeVar: number; tones: boolean; weights: boolean }
+  { label: string; hint: string; density: number; rotation: number; tones: boolean; weights: boolean }
 > = {
-  easy: { label: "Easy", hint: "Fewer numbers, upright", count: 30, rotation: 12, sizeVar: 0.05, tones: false, weights: false },
-  medium: { label: "Medium", hint: "More numbers, some tilt", count: 50, rotation: 30, sizeVar: 0.12, tones: false, weights: false },
-  hard: { label: "Hard", hint: "Dense, tilted, two tones", count: 60, rotation: 55, sizeVar: 0.2, tones: true, weights: false },
-  expert: { label: "Expert", hint: "Packed, spun, mixed styles", count: 80, rotation: 85, sizeVar: 0.28, tones: true, weights: true },
+  easy: { label: "Easy", hint: "Fewer numbers, upright", density: 0.75, rotation: 12, tones: false, weights: false },
+  medium: { label: "Medium", hint: "More numbers, some tilt", density: 1, rotation: 30, tones: false, weights: false },
+  hard: { label: "Hard", hint: "Dense, tilted, two tones", density: 1.15, rotation: 55, tones: true, weights: false },
+  expert: { label: "Expert", hint: "Packed, spun, mixed styles", density: 1.3, rotation: 85, tones: true, weights: true },
 };
+
+/** One shared label size in the board's 100-unit coordinate space. */
+export const BOARD_FONT_SIZE = 3.2;
+
+/** Sample larger ranges more densely without sacrificing label size or legibility. */
+export function boardNumberCount(config: GameConfig): number {
+  const span = config.max - config.min + 1;
+  const digits = Math.max(String(config.min).length, String(config.max).length);
+  const capacity = digits > 3 ? 26 : 44;
+  return Math.min(span, capacity, Math.round(16 * Math.sqrt(span / 50) * DIFFICULTIES[config.difficulty].density));
+}
 
 export const THEMES: { id: ThemeId; label: string }[] = [
   { id: "ocean", label: "Ocean" },

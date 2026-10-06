@@ -19,6 +19,8 @@ export const Route = createFileRoute("/practice")({
       { name: "description", content: "Solo practice: pick your shape, range and difficulty and race the clock to find the number." },
       { property: "og:title", content: `Practice — ${APP_NAME}` },
       { property: "og:description", content: "Offline solo number-search practice against the clock." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: Practice,
