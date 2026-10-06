@@ -1,16 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Copy, Link2, Plus, LogIn, Check, Wifi, WifiOff, Loader2, Crown, Play, ArrowRight, RotateCcw, Users, Info } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Copy, Link2, Plus, LogIn, Check, Wifi, WifiOff, Loader2, Crown, Play, RotateCcw, Info, Trophy } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { SetupForm } from "@/features/game/SetupForm";
-import { FinderView } from "@/features/game/FinderView";
-import { ResultCard } from "@/features/game/ResultCard";
-import { BoardView } from "@/components/BoardView";
+import { ClockHeader } from "@/features/game/ClockHeader";
+import { useChessClock, formatMs } from "@/features/game/useChessClock";
+import { BoardView, type NumberState } from "@/components/BoardView";
 import { useOnlineSession, type OnlineSession, type Seat } from "@/features/lobby/useOnlineSession";
 import { usePreferences } from "@/features/settings/preferences";
 import { shortId } from "@/lib/network/signaling";
@@ -19,6 +19,7 @@ import { DIFFICULTIES, THEMES, validateConfig } from "@/lib/game-engine";
 import { SHAPES } from "@/lib/shapes";
 import { APP_NAME } from "@/lib/brand";
 import { cn } from "@/lib/utils";
+import type { BoardNumber } from "@/types/game";
 
 export const Route = createFileRoute("/online")({
   head: () => ({
@@ -78,7 +79,6 @@ function Online() {
   const s = useOnlineSession(name);
   const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
   const [roomInput, setRoomInput] = useState("");
-  const [copiedLink, setCopiedLink] = useState(false);
 
   useEffect(() => {
     const h = window.location.hash;
@@ -96,7 +96,9 @@ function Online() {
   const connected = s.status === "connected" || s.status === "reconnecting";
   const lost = (s.status === "disconnected" || s.status === "failed") && !!s.peerName;
 
-  if (s.round && (connected || lost)) return <OnlineGame s={s} lost={lost} />;
+  if ((s.round || s.chessState || s.chessGameOver) && (connected || lost)) {
+    return <OnlineGame s={s} lost={lost} />;
+  }
 
   const displayRoomCode = s.roomCode || shortId(s.inviteCode);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -184,7 +186,7 @@ function Online() {
           </section>
         )}
 
-        {lost && !s.round && (
+        {lost && !s.round && !s.chessState && (
           <p role="alert" className="mt-6 rounded-2xl bg-destructive/10 p-4 text-sm font-medium text-destructive">
             {s.peerName} disconnected. Create or enter a room code to play again.
           </p>
@@ -252,7 +254,7 @@ function Lobby({ s }: { s: OnlineSession }) {
                 ["Theme", THEMES.find((t) => t.id === s.config.theme)?.label],
                 ["Range", `${s.config.min}–${s.config.max}`],
                 ["Difficulty", DIFFICULTIES[s.config.difficulty].label],
-                ["Timer", `${s.config.timerSec}s`],
+                ["Timer", `${s.config.timerSec}s total`],
               ].map(([k, v]) => (
                 <div key={k} className="rounded-xl bg-muted p-2"><dt className="text-xs text-muted-foreground">{k}</dt><dd className="font-semibold">{v}</dd></div>
               ))}
@@ -267,7 +269,7 @@ function Lobby({ s }: { s: OnlineSession }) {
           {s.myReady ? <><Check /> Ready!</> : "I'm ready"}
         </Button>
         {isHost && (
-          <Button variant="pop" size="xl" disabled={!s.myReady || !s.peerReady || errors.length > 0} onClick={() => s.startRound("host")}>
+          <Button variant="pop" size="xl" disabled={!s.myReady || !s.peerReady || errors.length > 0} onClick={() => s.startChessGame("host")}>
             <Play /> Start game
           </Button>
         )}
@@ -278,81 +280,201 @@ function Lobby({ s }: { s: OnlineSession }) {
 }
 
 function OnlineGame({ s, lost }: { s: OnlineSession; lost: boolean }) {
+  return <ChessOnlineGame s={s} lost={lost} />;
+}
+
+function ChessOnlineGame({ s, lost }: { s: OnlineSession; lost: boolean }) {
   const { name } = usePreferences();
-  const r = s.round!;
+  const cs = s.chessState;
+  const over = s.chessGameOver;
   const me = s.role!;
-  const iSelect = r.selector === me;
-  const [pick, setPick] = useState<number | null>(null);
-  useEffect(() => setPick(null), [r.round, r.seed]);
-  const names = me === "host"
-    ? { a: name || "You", b: s.peerName || "Guest" }
-    : { a: s.peerName || "Host", b: name || "You" };
+  const mySlot = (me === "host" ? "a" : "b") as "a" | "b";
+  const opSlot: "a" | "b" = mySlot === "a" ? "b" : "a";
+  const myName = name || (me === "host" ? "Host" : "Guest");
+  const opName = s.peerName || (me === "host" ? "Guest" : "Host");
+  const board = s.round?.board;
 
-  return (
-    <div className="min-h-screen overflow-x-hidden">
-      <AppHeader>
-        <span className="hidden items-center gap-1.5 rounded-xl bg-muted px-3 py-2 text-sm font-semibold sm:inline-flex">
-          <Users className="h-4 w-4" /> {names.a} {s.scores.a} · {s.scores.b} {names.b}
-        </span>
-        <StatusPill status={s.status} />
-      </AppHeader>
-      <main className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
-        {lost && (
-          <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-destructive/10 p-4 text-sm font-medium text-destructive">
-            {s.peerName || "The other player"} disconnected. Reconnecting needs a fresh invite.
-            <Button asChild variant="popAlt" size="sm"><Link to="/" onClick={() => s.reset()}>Leave</Link></Button>
-          </div>
-        )}
-        <p className="mb-3 text-center text-sm font-bold uppercase tracking-widest text-muted-foreground">
-          Round {r.round} · You are the {iSelect ? "selector" : "finder"}
-        </p>
+  const [pickValue, setPickValue] = useState<number | null>(null);
+  const [wrongFlash, setWrongFlash] = useState(0);
 
-        {r.phase === "selecting" && iSelect && (
-          <div className="mx-auto flex max-w-[min(100%,82vh)] flex-col gap-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="font-display text-xl font-bold">Pick a number to hide</p>
-              <Button variant="pop" disabled={pick === null} onClick={() => pick !== null && s.chooseTarget(pick)}>
-                Lock in {pick ?? ""}
-              </Button>
+  // Smooth clock display updated every 100ms
+  const display = useChessClock(cs ?? null);
+  const myMs = display[mySlot];
+  const opMs = display[opSlot];
+  const scores = cs?.scores ?? over?.scores ?? { a: 0, b: 0 };
+  const myScore = scores[mySlot];
+  const opScore = scores[opSlot];
+  const myClockRunning = cs?.activeClock === mySlot;
+  const opClockRunning = cs?.activeClock === opSlot;
+
+  const isSelecting = cs?.phase === "selecting" && cs.selecting === mySlot;
+  const isSearching = cs?.phase === "searching" && cs.searching === mySlot;
+  const opIsSearching = cs?.phase === "searching" && cs.searching === opSlot;
+  const usedNums = cs?.usedNumbers ?? [];
+  const target = cs?.target ?? null;
+
+  const confirmTarget = () => {
+    if (pickValue !== null && cs?.phase === "selecting") {
+      s.chessChooseTarget(pickValue);
+      setPickValue(null);
+    }
+  };
+
+  const handlePick = (n: BoardNumber) => {
+    if (!cs || usedNums.includes(n.value)) return;
+    if (isSelecting) {
+      setPickValue(n.value);
+    } else if (isSearching && target !== null) {
+      const correct = n.value === target;
+      s.chessReportGuess(n.value, correct);
+      if (!correct) setWrongFlash((f) => f + 1);
+    }
+  };
+
+  const stateOf = (n: BoardNumber): NumberState => {
+    if (usedNums.includes(n.value)) return "used";
+    if (isSelecting && n.value === pickValue) return "selected";
+    return "idle";
+  };
+
+  // ── Game Over Screen ──────────────────────────────────────────────────────
+  if (over) {
+    const winner = over.winner;
+    const iWin = winner === mySlot;
+    const isDraw = winner === "draw";
+    return (
+      <div className="min-h-screen overflow-x-hidden">
+        <AppHeader><StatusPill status={s.status} /></AppHeader>
+        <main className="mx-auto max-w-xl px-4 pb-16 sm:px-6">
+          <motion.section
+            initial={{ y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+            className="mt-8 rounded-3xl border-2 border-foreground bg-card p-6 shadow-pop sm:p-8" aria-live="polite"
+          >
+            <div className="flex items-center gap-3">
+              <Trophy className="h-9 w-9 text-primary" />
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Game Over</p>
+                <h2 className="font-display text-3xl font-extrabold">
+                  {isDraw ? "It's a draw!" : iWin ? "You win! 🎉" : `${opName} wins!`}
+                </h2>
+              </div>
             </div>
-            <BoardView board={r.board} interactive onPick={(n) => setPick(n.value)} stateOf={(n) => (n.value === pick ? "selected" : "idle")} label="Choose a target" />
-          </div>
-        )}
-        {r.phase === "selecting" && !iSelect && (
-          <Waiting text={`${s.peerName || "The other player"} is choosing a number…`} />
-        )}
-
-        {r.phase === "finding" && !iSelect && r.target !== undefined && (
-          <FinderView key={r.seed} board={r.board} target={r.target} onGuess={s.reportGuess} onFinish={(o) => s.reportFinish(o.found, o.timeMs, o.wrong)} />
-        )}
-        {r.phase === "finding" && iSelect && (
-          <div className="mx-auto flex max-w-[min(100%,82vh)] flex-col gap-3">
-            <p className="font-display text-xl font-bold">
-              {s.peerName || "They"} are hunting for <span className="text-primary">{r.target}</span> · {r.guesses.filter((g) => !g.correct).length} wrong so far
-            </p>
-            <BoardView board={r.board}
-              stateOf={(n) => (n.value === r.target ? "selected" : r.guesses.some((g) => g.value === n.value && !g.correct) ? "miss" : "idle")} label="Watching the finder" />
-          </div>
-        )}
-
-        {r.phase === "result" && r.result && (
-          <ResultCard
-            result={r.result}
-            names={names}
-            scores={s.scores}
-            history={s.history}
-            actions={
-              me === "host" ? (
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              {([mySlot, opSlot] as const).map((slot) => {
+                const isMe = slot === mySlot;
+                const sc = over.scores[slot];
+                const clockRem = cs?.clocks[slot]?.remainingMs;
+                const rem = clockRem !== undefined ? formatMs(clockRem) : "—";
+                return (
+                  <div key={slot} className={cn("rounded-2xl border-2 p-4 text-center", winner === slot ? "border-primary bg-primary/10" : "border-border")}>
+                    {winner === slot && <Trophy className="mx-auto mb-1 h-5 w-5 text-primary" />}
+                    <p className="font-semibold truncate">{isMe ? myName : opName}{isMe && <span className="text-muted-foreground text-sm"> (you)</span>}</p>
+                    <p className="font-display text-4xl font-extrabold mt-1">{sc}</p>
+                    <p className="text-xs text-muted-foreground mt-1">numbers found</p>
+                    <p className="text-sm font-mono mt-2">{rem} remaining</p>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-6 flex flex-wrap gap-2">
+              {me === "host" ? (
                 <>
-                  <Button variant="pop" size="lg" onClick={() => s.startRound(r.selector === "host" ? "guest" : "host")}>Next round (swap roles) <ArrowRight /></Button>
-                  <Button variant="popAlt" size="lg" onClick={s.rematch}><RotateCcw /> Rematch</Button>
+                  <Button variant="pop" size="lg" onClick={() => s.startChessGame("host")}><RotateCcw /> Play again</Button>
                   <Button variant="ghost" size="lg" onClick={s.backToLobby}>Back to lobby</Button>
                 </>
               ) : (
-                <p className="text-sm text-muted-foreground">Waiting for the host to start the next round…</p>
-              )
-            }
-          />
+                <p className="self-center text-sm text-muted-foreground">Waiting for the host to start a new game…</p>
+              )}
+            </div>
+          </motion.section>
+        </main>
+      </div>
+    );
+  }
+
+  if (!cs || !board) return <Waiting text="Starting game…" />;
+
+  // ── Active Game Screen ────────────────────────────────────────────────────
+  return (
+    <div className="min-h-screen overflow-x-hidden">
+      <AppHeader><StatusPill status={s.status} /></AppHeader>
+      <main className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
+        {lost && (
+          <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-destructive/10 p-4 text-sm font-medium text-destructive">
+            {opName} disconnected. Reconnecting needs a fresh invite.
+            <Button asChild variant="popAlt" size="sm"><Link to="/" onClick={() => s.reset()}>Leave</Link></Button>
+          </div>
+        )}
+
+        <ClockHeader
+          myRemainingMs={myMs}
+          opponentRemainingMs={opMs}
+          myScore={myScore}
+          opponentScore={opScore}
+          myName={myName}
+          opponentName={opName}
+          myClockRunning={myClockRunning}
+          opponentClockRunning={opClockRunning}
+        />
+
+        <AnimatePresence>
+          {wrongFlash > 0 && (
+            <motion.div
+              key={wrongFlash}
+              initial={{ opacity: 1, y: 0 }}
+              animate={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.8 }}
+              className="mb-3 rounded-xl bg-destructive/15 px-4 py-2 text-sm font-bold text-destructive text-center"
+            >
+              Wrong! −10% time penalty applied
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Selector: choose a number to hide */}
+        {isSelecting && (
+          <div className="mx-auto flex max-w-[min(100%,82vh)] flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Your turn — select</p>
+                <p className="font-display text-xl font-bold">Choose a number to hide</p>
+              </div>
+              <Button variant="pop" disabled={pickValue === null} onClick={confirmTarget}>
+                Hide {pickValue ?? ""}
+              </Button>
+            </div>
+            <BoardView board={board} interactive onPick={handlePick} stateOf={stateOf} label="Select a number to hide" />
+          </div>
+        )}
+
+        {/* Finder: find the target number */}
+        {isSearching && target !== null && (
+          <div className="mx-auto flex max-w-[min(100%,82vh)] flex-col gap-3">
+            <div className="flex items-center gap-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Find it!</p>
+                <p className="font-display text-5xl font-extrabold leading-none" aria-live="polite">{target}</p>
+              </div>
+            </div>
+            <BoardView board={board} interactive onPick={handlePick} stateOf={stateOf} label={`Find number ${target}`} />
+          </div>
+        )}
+
+        {/* Spectator: watching opponent */}
+        {!isSelecting && !isSearching && (
+          <div className="mx-auto flex max-w-[min(100%,82vh)] flex-col gap-3">
+            {cs.phase === "selecting" && (
+              <Waiting text={`${opName} is choosing a number…`} />
+            )}
+            {cs.phase === "searching" && opIsSearching && target !== null && (
+              <>
+                <p className="mb-2 text-center font-display text-xl font-bold">
+                  {opName} is hunting for <span className="text-primary">{target}</span>
+                </p>
+                <BoardView board={board} stateOf={stateOf} label="Watching the finder" />
+              </>
+            )}
+          </div>
         )}
       </main>
     </div>

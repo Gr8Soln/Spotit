@@ -2,7 +2,7 @@ import type { Board, BoardNumber } from "@/types/game";
 import { SHAPES, type Primitive } from "@/lib/shapes";
 import { cn } from "@/lib/utils";
 
-export type NumberState = "idle" | "miss" | "hit" | "reveal" | "selected";
+export type NumberState = "idle" | "miss" | "hit" | "reveal" | "selected" | "used";
 
 function Prim({ p, style }: { p: Primitive; style: React.CSSProperties }) {
   if (p.kind === "circle") return <circle cx={p.cx} cy={p.cy} r={p.r} style={style} />;
@@ -42,7 +42,7 @@ export function BoardView({ board, interactive, onPick, stateOf, className, labe
         <ShapeSilhouette shapeId={board.config.shape} />
         {board.numbers.map((n) => {
           const state = stateOf?.(n) ?? "idle";
-          const canPick = interactive && state !== "miss";
+          const canPick = interactive && state !== "miss" && state !== "used";
           return (
             <g
               key={n.id}

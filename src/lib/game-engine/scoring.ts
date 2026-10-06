@@ -2,7 +2,7 @@ import type { RoundOutcome, RoundResult } from "@/types/game";
 
 export const SELECTOR_WIN_POINTS = 50;
 
-/** Finder earns 100 + up to 100 speed bonus, minus 15 per wrong tap (min 10). Selector earns points if target survives. */
+/** Legacy per-round scoring (kept for practice mode). */
 export function scoreRound(
   round: number,
   target: number,
@@ -38,4 +38,23 @@ export function totals(results: RoundResult[]) {
 
 export function nextSelector(prev: "a" | "b"): "a" | "b" {
   return prev === "a" ? "b" : "a";
+}
+
+// ── Chess-clock helpers ───────────────────────────────────────────────────────
+
+/**
+ * Apply a 10% penalty to the finder's current remaining time.
+ * Returns new remaining ms (clamped to 0).
+ */
+export function applyWrongPenalty(currentMs: number): number {
+  return Math.max(0, Math.floor(currentMs * 0.9));
+}
+
+/**
+ * Determine winner by score count. Returns seat letter or "draw".
+ */
+export function calculateWinner(scores: { a: number; b: number }): "a" | "b" | "draw" {
+  if (scores.a > scores.b) return "a";
+  if (scores.b > scores.a) return "b";
+  return "draw";
 }

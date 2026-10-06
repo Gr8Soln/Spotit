@@ -8,6 +8,7 @@ export interface GameConfig {
   difficulty: Difficulty;
   min: number;
   max: number;
+  /** Total seconds each player has for the entire game (chess clock). */
   timerSec: number;
 }
 
@@ -45,4 +46,32 @@ export interface RoundResult extends RoundOutcome {
   finderPoints: number;
   selectorPoints: number;
   winner: "a" | "b";
+}
+
+/** Per-player chess clock state. */
+export interface PlayerClock {
+  /** Total remaining ms for this player. */
+  remainingMs: number;
+  /** performance.now() timestamp when the clock last started running, or null if paused. */
+  startedAt: number | null;
+}
+
+/** Full chess-clock game state for the online session. */
+export interface ChessClockState {
+  /** Total allocated ms per player (same for both). */
+  totalMs: number;
+  clocks: { a: PlayerClock; b: PlayerClock };
+  /** Which seat's clock is currently running. */
+  activeClock: "a" | "b" | null;
+  /** Numbers successfully found — permanently unavailable. */
+  usedNumbers: number[];
+  scores: { a: number; b: number };
+  /** Which seat is currently selecting the target. */
+  selecting: "a" | "b";
+  /** Which seat is currently searching (finding). */
+  searching: "a" | "b" | null;
+  /** The current target value. */
+  target: number | null;
+  /** Game lifecycle state. */
+  phase: "selecting" | "searching" | "game_over";
 }

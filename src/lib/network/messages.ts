@@ -9,6 +9,11 @@ const configSchema = z.object({
   timerSec: z.number().int(),
 });
 
+const playerClockSchema = z.object({
+  remainingMs: z.number().nonnegative(),
+  startedAt: z.number().nullable(),
+});
+
 const base = { sentAt: z.number() };
 
 /** Every peer message is validated against this schema before it reaches the game. */
@@ -23,6 +28,27 @@ export const gameMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("rematch"), ...base }),
   z.object({ type: z.literal("lobby"), ...base }),
   z.object({ type: z.literal("leave"), ...base }),
+  /** Chess-clock: sent by the host whenever clock state changes. */
+  z.object({
+    type: z.literal("clock_sync"),
+    clocks: z.object({ a: playerClockSchema, b: playerClockSchema }),
+    activeClock: z.enum(["a", "b"]).nullable(),
+    usedNumbers: z.array(z.number().int()),
+    scores: z.object({ a: z.number().int(), b: z.number().int() }),
+    selecting: z.enum(["a", "b"]),
+    searching: z.enum(["a", "b"]).nullable(),
+    target: z.number().int().nullable(),
+    phase: z.enum(["selecting", "searching", "game_over"]),
+    ...base,
+  }),
+  /** Chess-clock: game over notification with final state. */
+  z.object({
+    type: z.literal("chess_game_over"),
+    scores: z.object({ a: z.number().int(), b: z.number().int() }),
+    winner: z.enum(["a", "b", "draw"]),
+    clocks: z.object({ a: playerClockSchema, b: playerClockSchema }),
+    ...base,
+  }),
 ]);
 
 export type GameMessage = z.infer<typeof gameMessageSchema>;

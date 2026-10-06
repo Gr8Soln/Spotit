@@ -140,6 +140,8 @@
 .board-num[data-state="hit"] .board-num-bg { fill: var(--board-hit); }
 .board-num[data-state="selected"] .board-num-bg { fill: var(--board-accent); }
 .board-num[data-state="reveal"] .board-num-bg { stroke: var(--board-hit); stroke-width: 0.9; fill: color-mix(in oklab, var(--board-hit) 30%, transparent); animation: board-pulse 900ms ease-in-out infinite; }
+.board-num[data-state="used"] { opacity: 0.28; pointer-events: none; }
+.board-num[data-state="used"] .board-num-text { fill: var(--board-fg); }
 @keyframes board-pulse { 50% { stroke-width: 1.6; } }
 @media (prefers-reduced-motion: reduce) {
   .board-num[data-state="reveal"] .board-num-bg { animation: none; }

@@ -3,8 +3,9 @@ import { PeerLink, type ConnectionStatus } from "@/lib/network/peer";
 import { AutoRoomSignalingProvider, generateRoomCode, manualSignaling, normalizeRoomCode, type SignalingProvider } from "@/lib/network/signaling";
 import type { GameMessage, OutgoingMessage } from "@/lib/network/messages";
 import { DEFAULT_CONFIG, generateBoard, scoreRound, totals, validateConfig } from "@/lib/game-engine";
+import { applyWrongPenalty, calculateWinner } from "@/lib/game-engine/scoring";
 import { randomSeed } from "@/lib/utils/random";
-import type { Board, GameConfig, RoundResult } from "@/types/game";
+import type { Board, ChessClockState, GameConfig, RoundResult } from "@/types/game";
 
 export type Seat = "host" | "guest";
 /** Seat "a" = host, "b" = guest in the scoring engine. */
@@ -36,13 +37,21 @@ export function useOnlineSession(myName: string) {
   const [history, setHistory] = useState<RoundResult[]>([]);
   const [error, setError] = useState("");
 
+  // ── Chess clock state ─────────────────────────────────────────────────────
+  const [chessState, setChessState] = useState<ChessClockState | null>(null);
+  const [chessGameOver, setChessGameOver] = useState<{
+    scores: { a: number; b: number };
+    winner: "a" | "b" | "draw";
+  } | null>(null);
+
   const link = useRef<PeerLink | null>(null);
   const signalingRef = useRef<SignalingProvider | null>(null);
-  const stateRef = useRef({ role, config, round, myName });
-  stateRef.current = { role, config, round, myName };
+  const stateRef = useRef({ role, config, round, myName, chessState });
+  stateRef.current = { role, config, round, myName, chessState };
 
   const send = useCallback((m: OutgoingMessage) => link.current?.send(m), []);
 
+  // ── Legacy round helpers (practice mode / backward compat) ────────────────
   const beginRound = useCallback((n: number, seed: string, selector: Seat, cfg: GameConfig) => {
     setRound({ round: n, seed, selector, board: generateBoard(cfg, seed), phase: "selecting", guesses: [] });
   }, []);
@@ -58,6 +67,139 @@ export function useOnlineSession(myName: string) {
     setRound(next);
   }, []);
 
+  // ── Refs for chess-clock functions used inside onMessage ──────────────────
+  // (Avoids circular-dependency with useCallback — functions are defined after onMessage
+  //  but their current value is always up-to-date via the ref.)
+  const hostCorrectAnswerRef = useRef<((slot: "a" | "b", target: number) => void) | null>(null);
+  const hostWrongAnswerRef = useRef<((slot: "a" | "b") => void) | null>(null);
+  const hostTargetChosenRef = useRef<((target: number, selector: "a" | "b") => void) | null>(null);
+
+  // ── Chess-clock broadcast helper ──────────────────────────────────────────
+  const broadcastClockSync = useCallback((cs: ChessClockState) => {
+    send({
+      type: "clock_sync",
+      clocks: cs.clocks,
+      activeClock: cs.activeClock,
+      usedNumbers: cs.usedNumbers,
+      scores: cs.scores,
+      selecting: cs.selecting,
+      searching: cs.searching,
+      target: cs.target,
+      phase: cs.phase,
+    });
+  }, [send]);
+
+  // ── Chess-clock host actions ──────────────────────────────────────────────
+
+  /** Host: finder found the correct number. Stop their clock, mark used, switch roles. */
+  const hostCorrectAnswer = useCallback((finderSlot: "a" | "b", target: number) => {
+    setChessState((prev) => {
+      if (!prev) return prev;
+      const now = performance.now();
+      const c = prev.clocks[finderSlot];
+      const elapsed = c.startedAt !== null ? now - c.startedAt : 0;
+      const newRemaining = Math.max(0, c.remainingMs - elapsed);
+      const newClocks = { ...prev.clocks, [finderSlot]: { remainingMs: newRemaining, startedAt: null } };
+      const newScores = { ...prev.scores, [finderSlot]: prev.scores[finderSlot] + 1 };
+      const newUsed = [...prev.usedNumbers, target];
+      // Finder becomes the next selector
+      const next: ChessClockState = {
+        ...prev,
+        clocks: newClocks,
+        activeClock: null,
+        usedNumbers: newUsed,
+        scores: newScores,
+        selecting: finderSlot,
+        searching: null,
+        target: null,
+        phase: "selecting",
+      };
+      broadcastClockSync(next);
+      return next;
+    });
+  }, [broadcastClockSync]);
+
+  /** Host: finder tapped the wrong number. Apply 10% penalty. */
+  const hostWrongAnswer = useCallback((finderSlot: "a" | "b") => {
+    setChessState((prev) => {
+      if (!prev) return prev;
+      const now = performance.now();
+      const c = prev.clocks[finderSlot];
+      const elapsed = c.startedAt !== null ? now - c.startedAt : 0;
+      const currentRemaining = Math.max(0, c.remainingMs - elapsed);
+      const afterPenalty = applyWrongPenalty(currentRemaining);
+      const newClocks = {
+        ...prev.clocks,
+        [finderSlot]: { remainingMs: afterPenalty, startedAt: afterPenalty > 0 ? now : null },
+      };
+      if (afterPenalty <= 0) {
+        const winner = calculateWinner(prev.scores);
+        const next: ChessClockState = { ...prev, clocks: newClocks, activeClock: null, phase: "game_over" };
+        broadcastClockSync(next);
+        send({ type: "chess_game_over", scores: prev.scores, winner, clocks: newClocks });
+        setChessGameOver({ scores: prev.scores, winner });
+        return next;
+      }
+      const next: ChessClockState = { ...prev, clocks: newClocks };
+      broadcastClockSync(next);
+      return next;
+    });
+  }, [broadcastClockSync, send]);
+
+  /** Host: selector has chosen a target. Start the finder's clock. */
+  const hostTargetChosen = useCallback((target: number, selectorSlot: "a" | "b") => {
+    const finderSlot: "a" | "b" = selectorSlot === "a" ? "b" : "a";
+    setChessState((prev) => {
+      if (!prev) return prev;
+      const now = performance.now();
+      const newClocks = { ...prev.clocks, [finderSlot]: { ...prev.clocks[finderSlot], startedAt: now } };
+      const next: ChessClockState = {
+        ...prev,
+        clocks: newClocks,
+        activeClock: finderSlot,
+        target,
+        searching: finderSlot,
+        phase: "searching",
+      };
+      broadcastClockSync(next);
+      return next;
+    });
+  }, [broadcastClockSync]);
+
+  // Keep refs in sync
+  hostCorrectAnswerRef.current = hostCorrectAnswer;
+  hostWrongAnswerRef.current = hostWrongAnswer;
+  hostTargetChosenRef.current = hostTargetChosen;
+
+  /** Host: poll every 250ms to detect clock expiry. */
+  const hostCheckClockExpiry = useCallback(() => {
+    const cs = stateRef.current.chessState;
+    if (!cs || cs.phase === "game_over" || !cs.activeClock) return;
+    const c = cs.clocks[cs.activeClock];
+    if (c.startedAt === null) return;
+    const remaining = Math.max(0, c.remainingMs - (performance.now() - c.startedAt));
+    if (remaining > 0) return;
+    const slot = cs.activeClock;
+    setChessState((prev) => {
+      if (!prev || prev.phase === "game_over") return prev;
+      const expiredClocks = { ...prev.clocks, [slot]: { remainingMs: 0, startedAt: null } };
+      const next: ChessClockState = { ...prev, clocks: expiredClocks, activeClock: null, phase: "game_over" };
+      const winner = calculateWinner(prev.scores);
+      broadcastClockSync(next);
+      send({ type: "chess_game_over", scores: prev.scores, winner, clocks: expiredClocks });
+      setChessGameOver({ scores: prev.scores, winner });
+      return next;
+    });
+  }, [broadcastClockSync, send]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (stateRef.current.role === "host") hostCheckClockExpiry();
+    }, 250);
+    return () => clearInterval(id);
+  }, [hostCheckClockExpiry]);
+
+  // ── Network message handler ───────────────────────────────────────────────
   const onMessage = useCallback((m: GameMessage) => {
     const { role: myRole, config: cfg } = stateRef.current;
     switch (m.type) {
@@ -69,17 +211,62 @@ export function useOnlineSession(myName: string) {
       case "round_start":
         if (myRole === "guest") beginRound(m.round, m.seed, m.selector, cfg);
         break;
-      case "target":
+      case "target": {
+        // Guest receives this to know finder phase started — update round state
         setRound((r) => (r && r.selector !== myRole && r.phase === "selecting" && r.board.numbers.some((n) => n.value === m.value)
           ? { ...r, target: m.value, phase: "finding" } : r));
+        // Host processes guest's target selection authoritatively
+        if (myRole === "host") {
+          const cs = stateRef.current.chessState;
+          if (cs && cs.phase === "selecting") {
+            hostTargetChosenRef.current?.(m.value, cs.selecting);
+          }
+        }
         break;
-      case "guess":
+      }
+      case "guess": {
         setRound((r) => (r ? { ...r, guesses: [...r.guesses, { value: m.value, correct: m.correct }] } : r));
+        // Host processes guest's guesses authoritatively
+        if (myRole === "host") {
+          const cs = stateRef.current.chessState;
+          if (cs && cs.phase === "searching") {
+            // The finder is the non-selector; guest is slot "b"
+            const finderSlot: "a" | "b" = cs.selecting === "a" ? "b" : "a";
+            if (finderSlot === "b") { // guest is finder
+              if (m.correct) hostCorrectAnswerRef.current?.(finderSlot, m.value);
+              else hostWrongAnswerRef.current?.(finderSlot);
+            }
+          }
+        }
         break;
+      }
       case "finish": applyFinish(m.found, m.timeMs, m.wrong); break;
       case "rematch": setHistory([]); break;
-      case "lobby": setRound(null); setHistory([]); setMyReady(false); setPeerReady(false); break;
+      case "lobby":
+        setRound(null); setHistory([]); setMyReady(false); setPeerReady(false);
+        setChessState(null); setChessGameOver(null);
+        break;
       case "leave": setStatus("disconnected"); break;
+      case "clock_sync":
+        // Guest applies the authoritative clock state from host
+        setChessState({
+          totalMs: stateRef.current.config.timerSec * 1000,
+          clocks: m.clocks,
+          activeClock: m.activeClock,
+          usedNumbers: m.usedNumbers,
+          scores: m.scores,
+          selecting: m.selecting,
+          searching: m.searching,
+          target: m.target,
+          phase: m.phase,
+        });
+        break;
+      case "chess_game_over":
+        setChessGameOver({ scores: m.scores, winner: m.winner });
+        setChessState((prev) =>
+          prev ? { ...prev, clocks: m.clocks, activeClock: null, phase: "game_over" } : prev,
+        );
+        break;
     }
   }, [beginRound, applyFinish]);
 
@@ -101,6 +288,7 @@ export function useOnlineSession(myName: string) {
     signalingRef.current = null;
     setStatus("idle"); setRoomCode(""); setInviteCode(""); setReplyCode(""); setPeerName("");
     setMyReady(false); setPeerReady(false); setRound(null); setHistory([]); setError("");
+    setChessState(null); setChessGameOver(null);
   }, []);
 
   useEffect(() => () => link.current?.close(), []);
@@ -163,6 +351,42 @@ export function useOnlineSession(myName: string) {
     send({ type: "ready", ready: v });
   };
 
+  /** Host: initialise chess-clock state for a fresh game. */
+  const initChessState = useCallback((cfg: GameConfig, firstSelector: "a" | "b"): ChessClockState => {
+    const totalMs = cfg.timerSec * 1000;
+    return {
+      totalMs,
+      clocks: {
+        a: { remainingMs: totalMs, startedAt: null },
+        b: { remainingMs: totalMs, startedAt: null },
+      },
+      activeClock: null,
+      usedNumbers: [],
+      scores: { a: 0, b: 0 },
+      selecting: firstSelector,
+      searching: null,
+      target: null,
+      phase: "selecting",
+    };
+  }, []);
+
+  /**
+   * Host-only: start a new chess-clock game.
+   * Generates a board seed, initialises clock state, and syncs to the guest.
+   */
+  const startChessGame = useCallback((firstSelector: Seat) => {
+    if (role !== "host") return;
+    const cfg = stateRef.current.config;
+    const seed = randomSeed();
+    const firstSlot = toSlot(firstSelector);
+    const cs = initChessState(cfg, firstSlot);
+    setChessState(cs);
+    setChessGameOver(null);
+    send({ type: "round_start", round: 1, seed, selector: firstSelector });
+    beginRound(1, seed, firstSelector, cfg);
+    broadcastClockSync(cs);
+  }, [role, initChessState, send, beginRound, broadcastClockSync]);
+
   const startRound = (selector: Seat) => {
     if (role !== "host") return;
     const n = (round?.round ?? 0) + 1;
@@ -175,6 +399,39 @@ export function useOnlineSession(myName: string) {
     send({ type: "target", value });
     setRound((r) => (r ? { ...r, target: value, phase: "finding" } : r));
   };
+
+  /**
+   * Chess-clock mode: player selects a target number to hide.
+   * Host processes directly; guest sends the message (host will process and sync back).
+   */
+  const chessChooseTarget = useCallback((value: number) => {
+    const { role: myRole, chessState: cs } = stateRef.current;
+    if (!cs || cs.phase !== "selecting") return;
+    send({ type: "target", value });
+    if (myRole === "host") {
+      hostTargetChosen(value, cs.selecting);
+    }
+  }, [hostTargetChosen, send]);
+
+  /**
+   * Chess-clock mode: finder reports a guess (correct or wrong).
+   * Host processes directly; guest sends the message (host processes via onMessage).
+   */
+  const chessReportGuess = useCallback((value: number, correct: boolean) => {
+    const { role: myRole, chessState: cs } = stateRef.current;
+    send({ type: "guess", value, correct });
+    if (!cs || cs.phase !== "searching") return;
+    if (myRole === "host") {
+      // Host is the finder only when selecting slot is "b" (guest is selector)
+      const finderSlot: "a" | "b" = cs.selecting === "a" ? "b" : "a";
+      if (finderSlot === "a") { // host IS the finder
+        if (correct) hostCorrectAnswer(finderSlot, value);
+        else hostWrongAnswer(finderSlot);
+      }
+    }
+    // If host sent the guess but is not the finder, it was already sent — no extra action needed.
+    // Guest guesses are handled by the host via the "guess" message in onMessage.
+  }, [hostCorrectAnswer, hostWrongAnswer, send]);
 
   const reportGuess = (value: number, correct: boolean) => send({ type: "guess", value, correct });
 
@@ -195,12 +452,17 @@ export function useOnlineSession(myName: string) {
   const backToLobby = () => {
     send({ type: "lobby" });
     setRound(null); setHistory([]); setMyReady(false); setPeerReady(false);
+    setChessState(null); setChessGameOver(null);
   };
 
   return {
     role, status, roomCode, inviteCode, replyCode, peerName, config, myReady, peerReady, round, history, error,
     scores: totals(history),
-    host, join, acceptReply, reset, updateConfig, toggleReady, startRound, chooseTarget, reportGuess, reportFinish, rematch, backToLobby,
+    chessState,
+    chessGameOver,
+    host, join, acceptReply, reset, updateConfig, toggleReady,
+    startRound, chooseTarget, reportGuess, reportFinish, rematch, backToLobby,
+    startChessGame, chessChooseTarget, chessReportGuess,
   };
 }
 
