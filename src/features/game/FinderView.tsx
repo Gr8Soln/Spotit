@@ -97,7 +97,17 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
           <span className="font-semibold text-destructive">{misses.size}</span> wrong
         </div>
       </div>
-      <TimerBar elapsedMs={pre > 0 ? 0 : elapsed} durationMs={durationMs} />
+      <div className="relative">
+        <TimerBar elapsedMs={pre > 0 ? 0 : elapsed} durationMs={durationMs} />
+        <AnimatePresence>
+          {penaltyFlash > 0 && !end && (
+            <motion.span key={penaltyFlash} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="absolute -top-1 right-0 rounded-full bg-destructive px-2 py-0.5 text-xs font-extrabold text-destructive-foreground shadow-soft">
+              −{Math.round(WRONG_TAP_PENALTY * 100)}% time
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </div>
       <div className="relative">
         <BoardView board={board} interactive={!end && pre <= 0} onPick={pick} stateOf={stateOf} label={`Find number ${target}`} />
         <AnimatePresence>
