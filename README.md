@@ -6,29 +6,6 @@
 
 ---
 
-## 📸 Screenshots Showcase
-
-### 🏠 Homepage (Light & Dark Mode)
-| Light Mode | Dark Mode |
-| :---: | :---: |
-| ![Homepage Light](public/screenshots/home.png) | ![Homepage Dark](public/screenshots/home-dark.png) |
-
----
-
-### 🎮 Gameplay (Chess-Clock Mechanics)
-| Practice / Game View | Dark Game View |
-| :---: | :---: |
-| ![Gameplay Light](public/screenshots/practice-game.png) | ![Gameplay Dark](public/screenshots/practice-game-dark.png) |
-
----
-
-### 🌐 Setup & Online P2P Lobby
-| Solo Practice Setup | Online 5-Character Room Lobby |
-| :---: | :---: |
-| ![Practice Setup](public/screenshots/practice-setup.png) | ![Online Lobby](public/screenshots/online-lobby.png) |
-
----
-
 ## ✨ Features
 
 ### ♟️ Chess-Clock Multiplayer System
