@@ -53,6 +53,7 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
     playCue("start", muted);
     const id = setInterval(() => {
       const e = performance.now() - startRef.current;
+      elapsedRef.current = e;
       setElapsed(e);
       if (e >= durationMs) { clearInterval(id); finish(false, missesRef.current.size); }
     }, 100);
