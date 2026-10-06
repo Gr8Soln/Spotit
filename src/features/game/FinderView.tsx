@@ -15,6 +15,9 @@ interface Props {
   countdown?: number;
 }
 
+/** Fraction of the *remaining* time removed per wrong tap (0.5 = halves it). */
+export const WRONG_TAP_PENALTY = 0.5;
+
 /** Finder gameplay: the target's value is shown, never its position. Timing is measured on this client only. */
 export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: Props) {
   const { muted } = usePreferences();
@@ -23,7 +26,9 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
   const [elapsed, setElapsed] = useState(0);
   const [misses, setMisses] = useState<Set<number>>(new Set());
   const [end, setEnd] = useState<null | { found: boolean; hitId?: number | undefined }>(null);
+  const [penaltyFlash, setPenaltyFlash] = useState(0);
   const startRef = useRef(0);
+  const elapsedRef = useRef(0);
   const doneRef = useRef(false);
 
   useEffect(() => {
@@ -48,6 +53,7 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
     playCue("start", muted);
     const id = setInterval(() => {
       const e = performance.now() - startRef.current;
+      elapsedRef.current = e;
       setElapsed(e);
       if (e >= durationMs) { clearInterval(id); finish(false, missesRef.current.size); }
     }, 100);
@@ -66,6 +72,10 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
     else {
       playCue("miss", muted);
       setMisses((m) => new Set(m).add(n.id));
+      // Penalty: shave a fraction of the *remaining* time off the clock.
+      const remaining = Math.max(0, durationMs - elapsedRef.current);
+      startRef.current -= remaining * WRONG_TAP_PENALTY;
+      setPenaltyFlash((f) => f + 1);
     }
   };
 
@@ -87,7 +97,17 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
           <span className="font-semibold text-destructive">{misses.size}</span> wrong
         </div>
       </div>
-      <TimerBar elapsedMs={pre > 0 ? 0 : elapsed} durationMs={durationMs} />
+      <div className="relative">
+        <TimerBar elapsedMs={pre > 0 ? 0 : elapsed} durationMs={durationMs} />
+        <AnimatePresence>
+          {penaltyFlash > 0 && !end && (
+            <motion.span key={penaltyFlash} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              className="absolute -top-1 right-0 rounded-full bg-destructive px-2 py-0.5 text-xs font-extrabold text-destructive-foreground shadow-soft">
+              −{Math.round(WRONG_TAP_PENALTY * 100)}% time
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </div>
       <div className="relative">
         <BoardView board={board} interactive={!end && pre <= 0} onPick={pick} stateOf={stateOf} label={`Find number ${target}`} />
         <AnimatePresence>
