@@ -1,4 +1,4 @@
-# Spotto — visual number search
+# SpotIt — visual number search
 
 Two-player game: one player secretly picks a number, the other races the clock to find it on a shaped board
 (hand, heart, star, circle, blob). Includes a fully offline practice mode.
