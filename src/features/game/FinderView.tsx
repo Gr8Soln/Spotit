@@ -72,6 +72,10 @@ export function FinderView({ board, target, onGuess, onFinish, countdown = 3 }: 
     else {
       playCue("miss", muted);
       setMisses((m) => new Set(m).add(n.id));
+      // Penalty: shave a fraction of the *remaining* time off the clock.
+      const remaining = Math.max(0, durationMs - elapsedRef.current);
+      startRef.current -= remaining * WRONG_TAP_PENALTY;
+      setPenaltyFlash((f) => f + 1);
     }
   };
 
