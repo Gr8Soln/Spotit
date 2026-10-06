@@ -57,9 +57,9 @@ function CopyField({ label, value }: { label: string; value: string }) {
   const [done, setDone] = useState(false);
   return (
     <div className="space-y-1">
-      <Label>{label}</Label>
+      <Label htmlFor={`copy-${label}`}>{label}</Label>
       <div className="flex gap-2">
-        <Input readOnly value={value} className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
+        <Input id={`copy-${label}`} readOnly value={value} className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
         <Button variant="popAlt" onClick={async () => {
           await navigator.clipboard.writeText(value);
           setDone(true); toast.success("Copied"); setTimeout(() => setDone(false), 1500);
