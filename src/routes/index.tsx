@@ -16,6 +16,8 @@ export const Route = createFileRoute("/")({
       { name: "description", content: "A two-player visual number search game with hand, heart, star, circle and blob boards. Play online or practice solo." },
       { property: "og:title", content: `${APP_NAME} — Pick a number, race to find it` },
       { property: "og:description", content: "Two-player visual number search. One picks, one hunts against the clock." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: Landing,

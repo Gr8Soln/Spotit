@@ -27,6 +27,8 @@ export const Route = createFileRoute("/online")({
       { name: "description", content: "Create a peer-to-peer room and play the number-search game with a friend anywhere." },
       { property: "og:title", content: `Play online — ${APP_NAME}` },
       { property: "og:description", content: "You've been invited to a two-player number-search duel." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: Online,

@@ -12,6 +12,7 @@
 ## Architecture rules
 - Game rules live in `src/lib/game-engine` and `src/lib/shapes` as pure TS (no React) — so practice and online share identical, testable logic.
 - Boards are generated deterministically from (config, seed) via `src/lib/utils/random.ts` — peers only exchange the seed, never board data.
+- Number counts scale with range and difficulty within a shared legibility cap; labels use one fixed board-space font size and placement never shrinks them — keeps every shape readable and consistent.
 - Networking lives in `src/lib/network`: `PeerLink` (WebRTC DataChannel) + a replaceable `SignalingProvider` (default: manual copy/paste codes) — no backend allowed by product brief.
 - All peer messages are validated with the zod schema in `src/lib/network/messages.ts` before use — peers are untrusted.
 - Host coordinates round lifecycle; finder times itself locally to avoid cross-client clock drift. Scores are client-side and not tamper-proof.
