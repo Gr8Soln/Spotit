@@ -127,13 +127,13 @@ function encodeSubscribe(topic: string, msgId: number): Uint8Array {
   return pkt;
 }
 
-function encodePublish(topic: string, message: string): Uint8Array {
+function encodePublish(topic: string, message: string, retain = false): Uint8Array {
   const topBytes = new TextEncoder().encode(topic);
   const msgBytes = new TextEncoder().encode(message);
   const bodyLen = 2 + topBytes.length + msgBytes.length;
   const varLen = encodeVariableLength(bodyLen);
   const pkt = new Uint8Array(1 + varLen.length + bodyLen);
-  pkt[0] = 0x30;
+  pkt[0] = retain ? 0x31 : 0x30; // 0x31 = PUBLISH with RETAIN = 1
   pkt.set(varLen, 1);
   const offset = 1 + varLen.length;
   pkt[offset] = (topBytes.length >> 8) & 0xff;
@@ -150,9 +150,10 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
   private ws: WebSocket | null = null;
   private subscribers: Set<(desc: RTCSessionDescriptionInit) => void> = new Set();
   private candidateSubscribers: Set<(candidate: RTCIceCandidateInit) => void> = new Set();
-  private pendingPayloads: string[] = [];
+  private pendingPayloads: { payload: string; retain: boolean }[] = [];
   private connected = false;
   private senderId = Math.random().toString(36).slice(2, 9);
+  private lastOffer: RTCSessionDescriptionInit | null = null;
 
   constructor(public readonly roomCode: string) {
     this.connect();
@@ -175,6 +176,7 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
         this.ws = ws;
 
         ws.onopen = () => {
+          console.log(`[Signaling ${this.senderId}] WebSocket opened to ${url}`);
           ws.send(encodeConnect(clientId) as any);
         };
 
@@ -183,9 +185,14 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
           const bytes = new Uint8Array(e.data);
           const type = bytes[0]! & 0xf0;
           if (type === 0x20) { // CONNACK
+            console.log(`[Signaling ${this.senderId}] MQTT CONNACK received`);
             this.connected = true;
             ws.send(encodeSubscribe(topic, 1) as any);
-            for (const p of this.pendingPayloads) ws.send(encodePublish(topic, p) as any);
+            // Request offer in case host is already waiting
+            ws.send(encodePublish(topic, JSON.stringify({ type: "request_offer", senderId: this.senderId })) as any);
+            for (const { payload, retain } of this.pendingPayloads) {
+              ws.send(encodePublish(topic, payload, retain) as any);
+            }
             this.pendingPayloads = [];
           } else if (type === 0x30) { // PUBLISH
             try {
@@ -201,17 +208,36 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
               const obj = JSON.parse(payload);
               if (obj.senderId === this.senderId) return; // ignore self broadcast
 
+              console.log(`[Signaling ${this.senderId}] Received MQTT msg:`, obj.type || (obj.candidate ? "candidate" : "unknown"));
+
+              if (obj.type === "request_offer") {
+                if (this.lastOffer && ws.readyState === WebSocket.OPEN) {
+                  console.log(`[Signaling ${this.senderId}] Responding to request_offer with re-offer`);
+                  const reOffer = JSON.stringify({
+                    type: this.lastOffer.type,
+                    sdp: this.lastOffer.sdp,
+                    room: this.roomCode,
+                    senderId: this.senderId,
+                  });
+                  ws.send(encodePublish(topic, reOffer, true) as any);
+                }
+                return;
+              }
+
               if (obj.candidate) {
                 for (const sub of this.candidateSubscribers) sub(obj.candidate);
               } else if (obj.sdp && (obj.type === "offer" || obj.type === "answer")) {
                 const desc: RTCSessionDescriptionInit = { type: obj.type, sdp: obj.s || obj.sdp };
                 for (const sub of this.subscribers) sub(desc);
               }
-            } catch { /* ignore malformed */ }
+            } catch (err) {
+              console.warn(`[Signaling ${this.senderId}] Malformed message error:`, err);
+            }
           }
         };
 
-        ws.onerror = () => {
+        ws.onerror = (err) => {
+          console.warn(`[Signaling ${this.senderId}] WS error on ${url}:`, err);
           if (!this.connected) {
             endpointIdx++;
             setTimeout(tryConnect, 1000);
@@ -245,16 +271,18 @@ export class AutoRoomSignalingProvider implements SignalingProvider {
     if (this.ws && this.connected && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(encodePublish(`spotit/room/${this.roomCode}`, payload) as any);
     } else {
-      this.pendingPayloads.push(payload);
+      this.pendingPayloads.push({ payload, retain: false });
     }
   }
 
   encode(desc: RTCSessionDescriptionInit): string {
+    const isOffer = desc.type === "offer";
+    if (isOffer) this.lastOffer = desc;
     const payload = JSON.stringify({ type: desc.type, sdp: desc.sdp, room: this.roomCode, senderId: this.senderId });
     if (this.ws && this.connected && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(encodePublish(`spotit/room/${this.roomCode}`, payload) as any);
+      this.ws.send(encodePublish(`spotit/room/${this.roomCode}`, payload, isOffer) as any);
     } else {
-      this.pendingPayloads.push(payload);
+      this.pendingPayloads.push({ payload, retain: isOffer });
     }
     return this.roomCode;
   }

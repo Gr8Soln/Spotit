@@ -46,16 +46,26 @@ export class PeerLink {
   private channel: RTCDataChannel | null = null;
   private unsubscribeSignaling?: () => void;
   private unsubscribeCandidate?: () => void;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
 
   constructor(private signaling: SignalingProvider, private handlers: Handlers) {
     this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     this.pc.onconnectionstatechange = () => {
       const s = this.pc.connectionState;
+      console.log("[PeerLink] connectionState:", s);
       if (s === "connecting") handlers.onStatus("connecting");
       else if (s === "disconnected") handlers.onStatus("reconnecting");
       else if (s === "failed") handlers.onStatus("failed");
       else if (s === "closed") handlers.onStatus("disconnected");
       else if (s === "connected" && (this.channel?.readyState === "open" || !this.channel)) handlers.onStatus("connected");
+    };
+
+    this.pc.oniceconnectionstatechange = () => {
+      console.log("[PeerLink] iceConnectionState:", this.pc.iceConnectionState);
+    };
+
+    this.pc.onsignalingstatechange = () => {
+      console.log("[PeerLink] signalingState:", this.pc.signalingState);
     };
 
     this.pc.onicecandidate = (e) => {
@@ -67,29 +77,48 @@ export class PeerLink {
     if (this.signaling.onCandidate) {
       this.unsubscribeCandidate = this.signaling.onCandidate((candidate) => {
         if (this.pc.remoteDescription) {
-          this.pc.addIceCandidate(candidate).catch(() => {});
+          this.pc.addIceCandidate(candidate).catch((e) => console.warn("[PeerLink] addIceCandidate failed", e));
+        } else {
+          this.pendingCandidates.push(candidate);
         }
       });
     }
 
     if (this.signaling.subscribe) {
       this.unsubscribeSignaling = this.signaling.subscribe(async (desc) => {
+        console.log("[PeerLink] Received signaling description:", desc.type, "in state:", this.pc.signalingState);
         try {
           if (desc.type === "answer" && this.pc.signalingState === "have-local-offer") {
-            await this.pc.setRemoteDescription(desc);
+            await this.applyRemoteDescription(desc);
             this.handlers.onStatus("connecting");
           } else if (desc.type === "offer" && this.pc.signalingState === "stable") {
             await this.acceptRemoteOffer(desc);
           }
-        } catch { /* ignore mismatched messages */ }
+        } catch (e) { console.warn("[PeerLink] signaling desc handler failed:", e); }
       });
     }
   }
 
+  private async applyRemoteDescription(desc: RTCSessionDescriptionInit) {
+    console.log("[PeerLink] Applying remote description:", desc.type);
+    await this.pc.setRemoteDescription(desc);
+    for (const c of this.pendingCandidates) {
+      this.pc.addIceCandidate(c).catch(() => {});
+    }
+    this.pendingCandidates = [];
+  }
+
   private bind(ch: RTCDataChannel) {
+    console.log("[PeerLink] Binding data channel, current readyState:", ch.readyState);
     this.channel = ch;
-    ch.onopen = () => this.handlers.onStatus("connected");
-    ch.onclose = () => this.handlers.onStatus("disconnected");
+    ch.onopen = () => {
+      console.log("[PeerLink] Data channel OPENED!");
+      this.handlers.onStatus("connected");
+    };
+    ch.onclose = () => {
+      console.log("[PeerLink] Data channel CLOSED!");
+      this.handlers.onStatus("disconnected");
+    };
     ch.onmessage = (e) => {
       const msg = parseMessage(e.data);
       if (msg) this.handlers.onMessage(msg);
@@ -112,14 +141,14 @@ export class PeerLink {
     const desc = typeof code === "string" ? await this.signaling.decode(code) : code;
     if (desc.type !== "answer") throw new Error("Expected an answer description.");
     this.handlers.onStatus("connecting");
-    await this.pc.setRemoteDescription(desc);
+    await this.applyRemoteDescription(desc);
   }
 
   /** Guest: accept remote host offer and return answer description/code. */
   async acceptRemoteOffer(desc: RTCSessionDescriptionInit): Promise<string> {
     this.pc.ondatachannel = (e) => this.bind(e.channel);
     this.handlers.onStatus("connecting");
-    await this.pc.setRemoteDescription(desc);
+    await this.applyRemoteDescription(desc);
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
     await waitForIceCandidates(this.pc, 1500);

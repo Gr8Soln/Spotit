@@ -99,7 +99,8 @@ function Online() {
   if (s.round && (connected || lost)) return <OnlineGame s={s} lost={lost} />;
 
   const displayRoomCode = s.roomCode || shortId(s.inviteCode);
-  const inviteUrl = `${window.location.origin}/online#room=${displayRoomCode}`;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const inviteUrl = origin ? `${origin}/online#room=${displayRoomCode}` : `/online#room=${displayRoomCode}`;
 
   return (
     <div className="min-h-screen overflow-x-hidden">
@@ -134,8 +135,10 @@ function Online() {
                       <p className="font-display text-4xl font-extrabold tracking-wider text-primary">{displayRoomCode}</p>
                     </div>
                     <Button variant="popAlt" className="ml-auto" onClick={async () => {
-                      await navigator.clipboard.writeText(displayRoomCode);
-                      toast.success("Room code copied!");
+                      if (typeof navigator !== "undefined" && navigator.clipboard) {
+                        await navigator.clipboard.writeText(displayRoomCode);
+                        toast.success("Room code copied!");
+                      }
                     }}>
                       <Copy className="h-4 w-4" /> Copy Code
                     </Button>
@@ -173,7 +176,11 @@ function Online() {
               )}
             </Step>
             {s.error && <p role="alert" className="text-sm font-medium text-destructive">{s.error}</p>}
-            <Button variant="ghost" onClick={() => { s.reset(); setMode("choose"); history.replaceState(null, "", "/online"); }}>Cancel</Button>
+            <Button variant="ghost" onClick={() => {
+              s.reset();
+              setMode("choose");
+              if (typeof window !== "undefined") window.history.replaceState(null, "", "/online");
+            }}>Cancel</Button>
           </section>
         )}
 
